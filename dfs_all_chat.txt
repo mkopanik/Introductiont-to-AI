@@ -1,0 +1,37 @@
+def dfs_all_paths(self, starting_node: int):
+        """
+        Perform DFS to explore all possible paths, both complete and incomplete.
+        
+        Parameters:
+        starting_node : int - the node from which to start the search
+        
+        Returns:
+        list : A list of tuples where each tuple is (path, cost). Path can be incomplete or complete.
+        """
+        # Stack for DFS: stores tuples (path, cost)
+        stack = [([starting_node], 0)]
+        all_paths = []
+
+        while stack:
+            path, current_cost = stack.pop()
+            last_node = path[-1]
+
+            # Record the current (incomplete or complete) path and its cost
+            all_paths.append((path, current_cost))
+
+            # If the path includes all cities, check if it can return to the start
+            if len(path) == self.size:
+                return_to_start_cost = self.edges[last_node][starting_node]
+                if return_to_start_cost != 0:
+                    total_cost = current_cost + return_to_start_cost
+                    # Record the completed cycle (path returns to the start)
+                    all_paths.append((path + [starting_node], total_cost))
+
+            # Explore all unvisited neighbors (continue DFS)
+            for neighbor in range(self.size - 1, -1, -1):  # reverse order to simulate stack behavior
+                if neighbor not in path and self.edges[last_node][neighbor] != 0:
+                    new_path = path + [neighbor]
+                    new_cost = current_cost + self.edges[last_node][neighbor]
+                    stack.append((new_path, new_cost))
+
+        return all_paths
