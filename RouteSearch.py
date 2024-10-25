@@ -1,3 +1,4 @@
+from CityMap import CitiesMap
 class RouteSearch:
     def __init__(self,cities_map : CitiesMap):
         self.nodes = cities_map.cities
@@ -79,5 +80,22 @@ class RouteSearch:
 
         return all_paths
 
+    
     def get_min_distance(self,state_tree):
-        """ Requires state tree object from for example dfs or bfs algo"""
+        """ Requires state tree object from for example dfs or bfs algo, calculate distance only for full paths"""
+        from sys import maxsize
+        min_distance = maxsize
+        shortest_route = []
+        for cycle in state_tree:
+            if (len(cycle)==self.size + 1):  # we calculate distance only in case of full cycle
+                distance = 0
+                # we're now looping through one full cycle len n+1
+                for index in range(self.size):  # it's in fact len(state_tree) - 1 -> exactly what we need in this approach
+                    distance += self.edges[cycle[index]][cycle[index+1]]  # we need to extract ith and ith+1 element of our cycle 
+            
+                if (distance < min_distance):
+                    min_distance = distance
+                    shortest_route = cycle
+
+        return (shortest_route,min_distance)
+    
