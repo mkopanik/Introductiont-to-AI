@@ -98,4 +98,25 @@ class RouteSearch:
                     shortest_route = cycle
 
         return (shortest_route,min_distance)
-    
+    def nn(self,start):
+            from sys import maxsize
+            path = [start]
+            
+            while(len(path)!=self.size):
+                dist = maxsize  # initialize distance as maxsize
+                node = path[-1]  # get last node from path as a new 'starting node'
+                target = -1  # initialize target as a number from outside matrix index
+                for neighbour in range(self.size):   # iterate over neighbours of 'new' target                 
+                    cur_dist = self.edges[node][neighbour] 
+                    if ((neighbour not in path) & (0 < cur_dist < dist)):    # if path exists and is shorter than previous lower from this starting point 
+                        target = neighbour   # store neighbour
+                        dist = cur_dist   # store shortest distance 
+                        
+                if target == -1:    # we got in the dead end 
+                    return path , "Didn't find complete route"
+                path.append(target)
+            
+            if (self.edges[target][start]!=0):    # if we reached there and we can go back to start we found complete circle
+                path.append(start)
+                return path , self.get_distance(path)
+                    
