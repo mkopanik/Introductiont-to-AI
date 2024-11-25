@@ -119,4 +119,94 @@ class RouteSearch:
             if (self.edges[target][start]!=0):    # if we reached there and we can go back to start we found complete circle
                 path.append(start)
                 return path , self.get_distance(path)
+    def dijkstra(self,start):
+        # I think my implementation might be briefly described as bascilly brut force one but with usage of priority queue we should handle not fully connected graphes better
+       
+        from queue import PriorityQueue
+        from sys import maxsize
+        
+        # Priority queue to get something dijkstra like 
+        pq = PriorityQueue()
+        pq.put((0, start, [start], {start}))
+        
+        # Track the best solution
+        best_tour = None
+        best_distance = maxsize
+        
+        while not pq.empty():
+            current_distance, current_node, current_path, visited = pq.get()
+            
+            # If we've visited all cities, try to return to start
+            if len(visited) == self.size:
+                if self.edges[current_node][start] != 0:
+                    total_distance = current_distance + self.edges[current_node][start]
+                    complete_path = current_path + [start]
                     
+                    # Update best tour if this is shorter
+                    if total_distance < best_distance:
+                        best_tour = complete_path    # assigning only in situation that we got complete tour 
+                        best_distance = total_distance
+                continue
+            
+            # Explore neighboring cities
+            for next_city in range(self.size):
+                # Check if city is not visited and there's a valid route
+                if next_city not in visited and self.edges[current_node][next_city] != 0:
+                    # Calculate new distance
+                    new_distance = current_distance + self.edges[current_node][next_city]
+                    
+                    # Create new path and visited set
+                    new_path = current_path + [next_city]
+                    new_visited = visited.union({next_city})
+                    
+                    # Add to priority queue
+                    pq.put((new_distance, next_city, new_path, new_visited))
+        
+        return best_tour, best_distance
+    
+    def dijkstra_nn(self,start):
+        
+        from queue import PriorityQueue
+        from sys import maxsize
+        
+        # Initialize path with start node
+        path = [start]
+        total_distance = 0
+        unvisited = set(range(self.size)) - {start}
+        
+        current_node = start
+        
+        while unvisited:
+            # Priority queue to store potential next nodes
+            pq = PriorityQueue()
+            
+            # Check all unvisited cities
+            for next_city in unvisited:
+                # If there's a route to this city
+                if self.edges[current_node][next_city] != 0:   # add all neighbours to priority queue
+                    # Priority is the distance to the city
+                    pq.put((self.edges[current_node][next_city], next_city))
+            
+            # If no routes found, we're stuck  
+            if pq.empty():
+                return path, "Couldn't complete route - no connections"
+            
+            # Get the nearest city  extracting city 
+            _, nearest_city = pq.get()  
+            
+            # Add distance and update path
+            total_distance += self.edges[current_node][nearest_city]
+            path.append(nearest_city)
+            
+            # Update current node and unvisited set
+            current_node = nearest_city
+            unvisited.remove(nearest_city)
+        
+        # Try to return to start
+        if self.edges[current_node][start] != 0:
+            total_distance += self.edges[current_node][start]
+            path.append(start)
+            return path, total_distance
+        
+        return path, "Couldn't complete route - no return to start"
+                       
