@@ -1,25 +1,318 @@
-# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Implements triplet loss."""
+import tensorflow as tf
+from typeguard import typechecked
+from typing import Optional, Union, Callable,List
+
+import importlib
+import numpy as np
+
+# typing.py
+
+# TODO: Remove once https://github.com/tensorflow/tensorflow/issues/44613 is resolved
+if tf.__version__[:3] > "2.5":
+    from keras.engine import keras_tensor
+else:
+    from tensorflow.python.keras.engine import keras_tensor
+
+
+Number = Union[
+    float,
+    int,
+    np.float16,
+    np.float32,
+    np.float64,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+]
+
+Initializer = Union[None, dict, str, Callable, tf.keras.initializers.Initializer]
+Regularizer = Union[None, dict, str, Callable, tf.keras.regularizers.Regularizer]
+Constraint = Union[None, dict, str, Callable, tf.keras.constraints.Constraint]
+Activation = Union[None, str, Callable]
+if importlib.util.find_spec("tensorflow.keras.optimizers.legacy") is not None:
+    Optimizer = Union[
+        tf.keras.optimizers.Optimizer, tf.keras.optimizers.legacy.Optimizer, str
+    ]
+else:
+    Optimizer = Union[tf.keras.optimizers.Optimizer, str]
+
+TensorLike = Union[
+    List[Union[Number, list]],
+    tuple,
+    Number,
+    np.ndarray,
+    tf.Tensor,
+    tf.SparseTensor,
+    tf.Variable,
+    keras_tensor.KerasTensor,
+]
+FloatTensorLike = Union[tf.Tensor, float, np.float16, np.float32, np.float64]
+AcceptableDTypes = Union[tf.DType, np.dtype, type, int, str, None]
+
+
+#------------------------------------------------------------------------------
+# metric_learning.py
+
+@tf.function
+def pairwise_distance(feature: TensorLike, squared: bool = False):
+    """Computes the pairwise distance matrix with numerical stability.
+
+    output[i, j] = || feature[i, :] - feature[j, :] ||_2
+
+    Args:
+      feature: 2-D Tensor of size `[number of data, feature dimension]`.
+      squared: Boolean, whether or not to square the pairwise distances.
+
+    Returns:
+      pairwise_distances: 2-D Tensor of size `[number of data, number of data]`.
+    """
+    pairwise_distances_squared = tf.math.add(
+        tf.math.reduce_sum(tf.math.square(feature), axis=[1], keepdims=True),
+        tf.math.reduce_sum(
+            tf.math.square(tf.transpose(feature)), axis=[0], keepdims=True
+        ),
+    ) - 2.0 * tf.matmul(feature, tf.transpose(feature))
+
+    # Deal with numerical inaccuracies. Set small negatives to zero.
+    pairwise_distances_squared = tf.math.maximum(pairwise_distances_squared, 0.0)
+    # Get the mask where the zero distances are at.
+    error_mask = tf.math.less_equal(pairwise_distances_squared, 0.0)
+
+    # Optionally take the sqrt.
+    if squared:
+        pairwise_distances = pairwise_distances_squared
+    else:
+        pairwise_distances = tf.math.sqrt(
+            pairwise_distances_squared
+            + tf.cast(error_mask, dtype=tf.dtypes.float32) * 1e-16
+        )
+
+    # Undo conditionally adding 1e-16.
+    pairwise_distances = tf.math.multiply(
+        pairwise_distances,
+        tf.cast(tf.math.logical_not(error_mask), dtype=tf.dtypes.float32),
+    )
+
+    num_data = tf.shape(feature)[0]
+    # Explicitly set diagonals to zero.
+    mask_offdiagonals = tf.ones_like(pairwise_distances) - tf.linalg.diag(
+        tf.ones([num_data])
+    )
+    pairwise_distances = tf.math.multiply(pairwise_distances, mask_offdiagonals)
+    return pairwise_distances
+
+
+@tf.function
+def angular_distance(feature: TensorLike):
+    """Computes the angular distance matrix.
+
+    output[i, j] = 1 - cosine_similarity(feature[i, :], feature[j, :])
+
+    Args:
+      feature: 2-D Tensor of size `[number of data, feature dimension]`.
+
+    Returns:
+      angular_distances: 2-D Tensor of size `[number of data, number of data]`.
+    """
+    # normalize input
+    feature = tf.math.l2_normalize(feature, axis=1)
+
+    # create adjaceny matrix of cosine similarity
+    angular_distances = 1 - tf.matmul(feature, feature, transpose_b=True)
+
+    # ensure all distances > 1e-16
+    angular_distances = tf.maximum(angular_distances, 0.0)
+
+    return angular_distances
+
+
+#-----------------------------------------------------------------------------------------
+# keras_utils.py
+
+
+"""Utilities for tf.keras."""
 
 import tensorflow as tf
-import metric_learning
-from keras_utils import LossFunctionWrapper
-from types import FloatTensorLike, TensorLike
-from typeguard import typechecked
-from typing import Optional, Union, Callable
+
+
+def is_tensor_or_variable(x):
+    return tf.is_tensor(x) or isinstance(x, tf.Variable)
+
+
+class LossFunctionWrapper(tf.keras.losses.Loss):
+    """Wraps a loss function in the `Loss` class."""
+
+    def __init__(
+        self, fn, reduction=tf.keras.losses.Reduction.AUTO, name=None, **kwargs
+    ):
+        """Initializes `LossFunctionWrapper` class.
+
+        Args:
+          fn: The loss function to wrap, with signature `fn(y_true, y_pred,
+            **kwargs)`.
+          reduction: (Optional) Type of `tf.keras.losses.Reduction` to apply to
+            loss. Default value is `AUTO`. `AUTO` indicates that the reduction
+            option will be determined by the usage context. For almost all cases
+            this defaults to `SUM_OVER_BATCH_SIZE`. When used with
+            `tf.distribute.Strategy`, outside of built-in training loops such as
+            `tf.keras` `compile` and `fit`, using `AUTO` or `SUM_OVER_BATCH_SIZE`
+            will raise an error. Please see this custom training [tutorial](
+              https://www.tensorflow.org/tutorials/distribute/custom_training)
+            for more details.
+          name: (Optional) name for the loss.
+          **kwargs: The keyword arguments that are passed on to `fn`.
+        """
+        super().__init__(reduction=reduction, name=name)
+        self.fn = fn
+        self._fn_kwargs = kwargs
+
+    def call(self, y_true, y_pred):
+        """Invokes the `LossFunctionWrapper` instance.
+
+        Args:
+          y_true: Ground truth values.
+          y_pred: The predicted values.
+
+        Returns:
+          Loss values per sample.
+        """
+        return self.fn(y_true, y_pred, **self._fn_kwargs)
+
+    def get_config(self):
+        config = {}
+        for k, v in iter(self._fn_kwargs.items()):
+            config[k] = tf.keras.backend.eval(v) if is_tensor_or_variable(v) else v
+        base_config = super().get_config()
+        return {**base_config, **config}
+
+
+def normalize_data_format(value):
+    if value is None:
+        value = tf.keras.backend.image_data_format()
+    data_format = value.lower()
+    if data_format not in {"channels_first", "channels_last"}:
+        raise ValueError(
+            "The `data_format` argument must be one of "
+            '"channels_first", "channels_last". Received: ' + str(value)
+        )
+    return data_format
+
+
+def normalize_tuple(value, n, name):
+    """Transforms an integer or iterable of integers into an integer tuple.
+
+    A copy of tensorflow.python.keras.util.
+
+    Args:
+      value: The value to validate and convert. Could an int, or any iterable
+        of ints.
+      n: The size of the tuple to be returned.
+      name: The name of the argument being validated, e.g. "strides" or
+        "kernel_size". This is only used to format error messages.
+
+    Returns:
+      A tuple of n integers.
+
+    Raises:
+      ValueError: If something else than an int/long or iterable thereof was
+        passed.
+    """
+    if isinstance(value, int):
+        return (value,) * n
+    else:
+        try:
+            value_tuple = tuple(value)
+        except TypeError:
+            raise TypeError(
+                "The `"
+                + name
+                + "` argument must be a tuple of "
+                + str(n)
+                + " integers. Received: "
+                + str(value)
+            )
+        if len(value_tuple) != n:
+            raise ValueError(
+                "The `"
+                + name
+                + "` argument must be a tuple of "
+                + str(n)
+                + " integers. Received: "
+                + str(value)
+            )
+        for single_value in value_tuple:
+            try:
+                int(single_value)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    "The `"
+                    + name
+                    + "` argument must be a tuple of "
+                    + str(n)
+                    + " integers. Received: "
+                    + str(value)
+                    + " "
+                    "including element "
+                    + str(single_value)
+                    + " of type"
+                    + " "
+                    + str(type(single_value))
+                )
+        return value_tuple
+
+
+def _hasattr(obj, attr_name):
+    # If possible, avoid retrieving the attribute as the object might run some
+    # lazy computation in it.
+    if attr_name in dir(obj):
+        return True
+    try:
+        getattr(obj, attr_name)
+    except AttributeError:
+        return False
+    else:
+        return True
+
+
+def assert_like_rnncell(cell_name, cell):
+    """Raises a TypeError if cell is not like a
+    tf.keras.layers.AbstractRNNCell.
+
+    Args:
+      cell_name: A string to give a meaningful error referencing to the name
+        of the function argument.
+      cell: The object which should behave like a
+        tf.keras.layers.AbstractRNNCell.
+
+    Raises:
+      TypeError: A human-friendly exception.
+    """
+    conditions = [
+        _hasattr(cell, "output_size"),
+        _hasattr(cell, "state_size"),
+        _hasattr(cell, "get_initial_state"),
+        callable(cell),
+    ]
+
+    errors = [
+        "'output_size' property is missing",
+        "'state_size' property is missing",
+        "'get_initial_state' method is required",
+        "is not callable",
+    ]
+
+    if not all(conditions):
+        errors = [error for error, cond in zip(errors, conditions) if not cond]
+        raise TypeError(
+            "The argument {!r} ({}) is not an RNNCell: {}.".format(
+                cell_name, cell, ", ".join(errors)
+            )
+        )
 
 
 def _masked_maximum(data, mask, dim=1):
@@ -43,6 +336,9 @@ def _masked_maximum(data, mask, dim=1):
     )
     return masked_maximums
 
+
+#============================================================================================================
+# triplet.py
 
 def _masked_minimum(data, mask, dim=1):
     """Computes the axis wise minimum over chosen elements.
@@ -122,17 +418,17 @@ def triplet_semihard_loss(
     # Build pairwise squared distance matrix
 
     if distance_metric == "L2":
-        pdist_matrix = metric_learning.pairwise_distance(
+        pdist_matrix = pairwise_distance(
             precise_embeddings, squared=False
         )
 
     elif distance_metric == "squared-L2":
-        pdist_matrix = metric_learning.pairwise_distance(
+        pdist_matrix = pairwise_distance(
             precise_embeddings, squared=True
         )
 
     elif distance_metric == "angular":
-        pdist_matrix = metric_learning.angular_distance(precise_embeddings)
+        pdist_matrix = angular_distance(precise_embeddings)
 
     else:
         pdist_matrix = distance_metric(precise_embeddings)
@@ -258,17 +554,17 @@ def triplet_hard_loss(
 
     # Build pairwise squared distance matrix.
     if distance_metric == "L2":
-        pdist_matrix = metric_learning.pairwise_distance(
+        pdist_matrix = pairwise_distance(
             precise_embeddings, squared=False
         )
 
     elif distance_metric == "squared-L2":
-        pdist_matrix = metric_learning.pairwise_distance(
+        pdist_matrix = pairwise_distance(
             precise_embeddings, squared=True
         )
 
     elif distance_metric == "angular":
-        pdist_matrix = metric_learning.angular_distance(precise_embeddings)
+        pdist_matrix = angular_distance(precise_embeddings)
 
     else:
         pdist_matrix = distance_metric(precise_embeddings)
