@@ -1,0 +1,27 @@
+Fuzzy logic 
+
+or max(x,y)
+and min(x,y)
+
+fuzzy system based on current speed and proximity of the buildiing 2 fron sensors
+
+
+define fuzzy sets for distances (high small velocity, high, small speed) and depending of the conditions and rules
+
+high, distance heigh -> speed high  
+
+Task 2
+
+define fuzzy  sets without common parts
+
+every point in the space set should have sum to 1 
+
+see tutorial in the link 
+
+
+
+A star admissible = BFS/DFS
+
+inadmisable 
+
+do genetic algorithm na osi x powinny być resourcy i tak jak jest na zdjęciu my wykonujemy task 1 i resource 1, 2 .... i potem jak są one ułożone to praca została wykonana, następnie jak robimy dla tasku 2 to one powinny się zaczynać tam gdzie kończą resourcy dla taska 1, czyli w miejsu gdzie kończy się zadanie 1.1 to zaczyna się 2.1 itd, szpary mogą zostać 
